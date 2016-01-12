@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from __future__ import with_statement
+from shutil import copystat, copy2, Error
 import logging
 import optparse
 import os
@@ -28,6 +29,51 @@ if sys.platform == 'win32':
 
 class UserError(Exception):
     pass
+
+
+def copytree(src, dst, symlinks=False, ignore=None, copy_function=copy2):
+    """Recursively copy a directory tree using copy_function (introduced
+    here). For more details look at docs, since it's a python 2.7 copytree
+    """
+    names = os.listdir(src)
+    if ignore is not None:
+        ignored_names = ignore(src, names)
+    else:
+        ignored_names = set()
+
+    os.makedirs(dst)
+    errors = []
+    for name in names:
+        if name in ignored_names:
+            continue
+        srcname = os.path.join(src, name)
+        dstname = os.path.join(dst, name)
+        try:
+            if symlinks and os.path.islink(srcname):
+                linkto = os.readlink(srcname)
+                os.symlink(linkto, dstname)
+            elif os.path.isdir(srcname):
+                if os.path.isdir(srcname):
+                    copytree(srcname, dstname, symlinks, ignore, copy_function)
+            else:
+                # Will raise a SpecialFileError for unsupported file types
+                copy_function(srcname, dstname)
+        # catch the Error from the recursive copytree so that we can
+        # continue with other files
+        except Error, err:
+            errors.extend(err.args[0])
+        except EnvironmentError, why:
+            errors.append((srcname, dstname, str(why)))
+    try:
+        copystat(src, dst)
+    except OSError, why:
+        if WindowsError is not None and isinstance(why, WindowsError):
+            # Copying file access times may fail on Windows
+            pass
+        else:
+            errors.append((src, dst, str(why)))
+    if errors:
+        raise Error, errors
 
 
 def _dirmatch(path, matchwith):
@@ -76,8 +122,8 @@ def clone_virtualenv(src_dir, dst_dir):
     #sys_path = _virtualenv_syspath(src_dir)
     logger.info('cloning virtualenv \'%s\' => \'%s\'...' %
             (src_dir, dst_dir))
-    shutil.copytree(src_dir, dst_dir, symlinks=True,
-            ignore=shutil.ignore_patterns('*.pyc'))
+    copytree(src_dir, dst_dir, symlinks=True,
+            ignore=shutil.ignore_patterns('*.pyc'), copy_function=os.link)
     version, sys_path = _virtualenv_sys(dst_dir)
     logger.info('fixing scripts in bin...')
     fixup_scripts(src_dir, dst_dir, version)
